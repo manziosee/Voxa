@@ -388,4 +388,4 @@ Voxa/
 
 ## License
 
-MIT © 2026 SIC Rwanda
+MIT © 2026 MANZI NIYONGIRA Osee
