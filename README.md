@@ -675,4 +675,4 @@ alembic downgrade -1
 
 ## 📜 License
 
-MIT © 2026 MANZI NIYONGIRA Osee — [SIC Rwanda](mailto:info@sicrwanda.com)
+MIT © 2026 MANZI NIYONGIRA Osee 
