@@ -45,6 +45,9 @@ class Business(Base):
     customers: Mapped[list["Customer"]] = relationship("Customer", back_populates="business")
     appointments: Mapped[list["Appointment"]] = relationship("Appointment", back_populates="business")
     calls: Mapped[list["Call"]] = relationship("Call", back_populates="business")
+    api_keys: Mapped[list["APIKey"]] = relationship("APIKey", back_populates="business", cascade="all, delete-orphan")
+    tickets: Mapped[list["Ticket"]] = relationship("Ticket", back_populates="business", cascade="all, delete-orphan")
+    webhook_configs: Mapped[list["WebhookConfig"]] = relationship("WebhookConfig", back_populates="business", cascade="all, delete-orphan")
 
 
 class BusinessHours(Base):

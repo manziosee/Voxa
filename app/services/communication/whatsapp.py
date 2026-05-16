@@ -97,3 +97,102 @@ class WhatsAppService:
             "rw": f"Ibutso: Muraho {name}, rendez-vous yawe ya *{service}* kuri *{business}* ni ejo saa {at}.",
         }
         return templates.get(lang, templates["en"])
+
+    async def send_interactive_buttons(
+        self,
+        to: str,
+        body_text: str,
+        buttons: list[dict],
+        header: str | None = None,
+        footer: str | None = None,
+    ) -> bool:
+        """
+        Send a WhatsApp interactive message with up to 3 quick-reply buttons.
+
+        buttons format: [{"id": "confirm", "title": "Confirm"}, ...]
+        Only supported via Meta Cloud API (not Twilio sandbox).
+        """
+        if not settings.whatsapp_api_token or not settings.whatsapp_phone_number_id:
+            return False
+
+        payload: dict = {
+            "messaging_product": "whatsapp",
+            "to": to.replace("whatsapp:", "").replace("+", ""),
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": body_text},
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": b["id"], "title": b["title"][:20]}}
+                        for b in buttons[:3]
+                    ]
+                },
+            },
+        }
+        if header:
+            payload["interactive"]["header"] = {"type": "text", "text": header}
+        if footer:
+            payload["interactive"]["footer"] = {"text": footer}
+
+        url = f"https://graph.facebook.com/v20.0/{settings.whatsapp_phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {settings.whatsapp_api_token}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            return resp.status_code == 200
+
+    async def send_appointment_buttons(
+        self,
+        to: str,
+        customer_name: str,
+        service: str,
+        scheduled_at: str,
+        business_name: str,
+        language: str = "en",
+    ) -> bool:
+        """Send appointment confirmation with Confirm / Reschedule / Cancel buttons."""
+        labels = {
+            "en": {
+                "body": f"Hi {customer_name}! You have a *{service}* appointment at *{business_name}* on {scheduled_at}.",
+                "confirm": "Confirm",
+                "reschedule": "Reschedule",
+                "cancel": "Cancel",
+                "footer": "Reply or tap a button",
+            },
+            "fr": {
+                "body": f"Bonjour {customer_name}! Rendez-vous *{service}* chez *{business_name}* le {scheduled_at}.",
+                "confirm": "Confirmer",
+                "reschedule": "Reporter",
+                "cancel": "Annuler",
+                "footer": "Appuyez sur un bouton",
+            },
+            "sw": {
+                "body": f"Habari {customer_name}! Miadi ya *{service}* kwa *{business_name}* tarehe {scheduled_at}.",
+                "confirm": "Thibitisha",
+                "reschedule": "Badilisha",
+                "cancel": "Ghairi",
+                "footer": "Bonyeza kitufe",
+            },
+            "rw": {
+                "body": f"Muraho {customer_name}! Rendez-vous ya *{service}* kuri *{business_name}* ku {scheduled_at}.",
+                "confirm": "Emeza",
+                "reschedule": "Hindura",
+                "cancel": "Hagarika",
+                "footer": "Kanda buto",
+            },
+        }
+        l = labels.get(language, labels["en"])
+        buttons = [
+            {"id": "appt_confirm", "title": l["confirm"]},
+            {"id": "appt_reschedule", "title": l["reschedule"]},
+            {"id": "appt_cancel", "title": l["cancel"]},
+        ]
+        return await self.send_interactive_buttons(
+            to=to,
+            body_text=l["body"],
+            buttons=buttons,
+            footer=l["footer"],
+        )

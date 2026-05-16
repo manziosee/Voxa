@@ -21,6 +21,7 @@ from app.models.conversation import Conversation, ConversationChannel, Message, 
 from app.services.voice.pipeline import VoicePipeline
 from app.services.communication.twilio_service import TwilioService
 from app.services.crm.crm_service import CRMService
+from app.services.voice.ivr import get_default_menu, build_ivr_twiml
 from app.config import get_settings
 
 settings = get_settings()
@@ -84,7 +85,16 @@ async def inbound_call(
     await db.refresh(call)
     await db.refresh(conversation)
 
-    # Build greeting TwiML
+    base = _base_url(request)
+
+    # If business has IVR enabled (extra config flag), show menu first
+    use_ivr = (business.extra or {}).get("ivr_enabled", False) if hasattr(business, "extra") else False
+    if use_ivr:
+        menu = get_default_menu(business.name, business.preferred_language)
+        twiml = build_ivr_twiml(menu, base_url=base, call_id=str(call.id))
+        return Response(content=twiml, media_type="application/xml")
+
+    # Direct AI greeting
     twilio = TwilioService()
     greeting = business.greeting_message or f"Hello, welcome to {business.name}. How can I help you today?"
     twiml = twilio.build_greeting_twiml(
@@ -92,7 +102,7 @@ async def inbound_call(
         business_name=business.name,
         greeting_message=greeting,
         language=business.preferred_language,
-        base_url=_base_url(request),
+        base_url=base,
     )
     return Response(content=twiml, media_type="application/xml")
 
@@ -197,16 +207,17 @@ async def call_status_callback(
     db: AsyncSession = Depends(get_db),
 ):
     """Twilio sends call status updates here."""
+    from app.models.call import CallStatus as CS
     result = await db.execute(select(Call).where(Call.twilio_call_sid == CallSid))
     call = result.scalar_one_or_none()
     if not call:
         return {"status": "ok"}
 
     status_map = {
-        "completed": CallStatus.completed,
-        "failed": CallStatus.failed,
-        "busy": CallStatus.missed,
-        "no-answer": CallStatus.missed,
+        "completed": CS.completed,
+        "failed": CS.failed,
+        "busy": CS.missed,
+        "no-answer": CS.missed,
     }
     if CallStatus in status_map:
         call.status = status_map[CallStatus]
@@ -216,6 +227,17 @@ async def call_status_callback(
     if RecordingUrl:
         call.recording_url = RecordingUrl
 
+    # Generate AI summary from transcript
+    if CallStatus == "completed":
+        from app.models.call import CallTranscript as CT
+        transcript_result = await db.execute(
+            select(CT).where(CT.call_id == call.id).order_by(CT.timestamp)
+        )
+        transcripts = transcript_result.scalars().all()
+        if transcripts:
+            lines = [f"{t.speaker.upper()}: {t.text}" for t in transcripts]
+            call.summary = await _generate_call_summary(lines, call.language_detected or "en")
+
     await db.commit()
 
     # Post-call CRM update
@@ -223,3 +245,77 @@ async def call_status_callback(
     await crm.post_call_update(call)
 
     return {"status": "ok"}
+
+
+@router.post(
+    "/ivr",
+    summary="IVR digit handler",
+    description="Twilio posts here after the caller presses a digit in the IVR menu.",
+    include_in_schema=False,
+)
+async def ivr_digit_handler(
+    request: Request,
+    call_id: uuid.UUID,
+    Digits: str = Form(default=""),
+    db: AsyncSession = Depends(get_db),
+):
+    call = await db.get(Call, call_id)
+    if not call:
+        return Response(content="<Response><Hangup/></Response>", media_type="application/xml")
+
+    business = await db.get(Business, call.business_id)
+    twilio = TwilioService()
+    base = _base_url(request)
+
+    if Digits == "0":
+        # Escalate to human immediately
+        if business and business.escalation_phone:
+            twiml = twilio.build_escalation_twiml(
+                escalation_phone=business.escalation_phone,
+                hold_message="Connecting you to our team. Please hold.",
+            )
+        else:
+            twiml = twilio.build_response_twiml(
+                call_id=call_id,
+                ai_reply="No human agent is available right now. Our AI will assist you.",
+                language=business.preferred_language if business else "en",
+                base_url=base,
+                is_final=False,
+            )
+        return Response(content=twiml, media_type="application/xml")
+
+    # All other digits → hand off to AI agent with context hint
+    greeting = "Hello! How can I help you today?"
+    if business:
+        hint_map = {"1": "appointment booking", "2": "general inquiries", "3": "billing"}
+        hint = hint_map.get(Digits, "")
+        greeting = f"I'll help you with {hint}. " if hint else ""
+        greeting += business.greeting_message or f"Welcome to {business.name}. How can I help?"
+
+    twiml = twilio.build_greeting_twiml(
+        call_id=call_id,
+        business_name=business.name if business else "",
+        greeting_message=greeting,
+        language=business.preferred_language if business else "en",
+        base_url=base,
+    )
+    return Response(content=twiml, media_type="application/xml")
+
+
+async def _generate_call_summary(transcript_lines: list[str], language: str) -> str:
+    """Use LLM to produce a 2-3 sentence call summary."""
+    try:
+        from langchain_openai import ChatOpenAI
+        from app.config import get_settings
+        cfg = get_settings()
+        llm = ChatOpenAI(model="gpt-4o-mini", api_key=cfg.openai_api_key, temperature=0)
+        transcript = "\n".join(transcript_lines[-40:])  # last 40 turns max
+        prompt = (
+            f"Summarize this AI receptionist call in 2-3 sentences. "
+            f"Focus on the customer's intent, what was resolved, and any follow-up needed. "
+            f"Write in English regardless of call language.\n\nTranscript:\n{transcript}"
+        )
+        response = await llm.ainvoke(prompt)
+        return response.content.strip()
+    except Exception:
+        return ""
