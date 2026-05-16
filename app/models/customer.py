@@ -40,3 +40,4 @@ class Customer(Base):
     appointments: Mapped[list["Appointment"]] = relationship("Appointment", back_populates="customer")
     calls: Mapped[list["Call"]] = relationship("Call", back_populates="customer")
     conversations: Mapped[list["Conversation"]] = relationship("Conversation", back_populates="customer")
+    tickets: Mapped[list["Ticket"]] = relationship("Ticket", back_populates="customer", cascade="all, delete-orphan")

@@ -1,10 +1,13 @@
 """
 Analytics & dashboard metrics for a business over a date range.
 """
+import csv
+import io
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, case
 
@@ -230,3 +233,128 @@ async def daily_call_volume(
         "period_end": period_end.isoformat(),
         "data": [{"date": d, "calls": c} for d, c in sorted(daily.items())],
     }
+
+
+@router.get(
+    "/{business_id}/export/calls",
+    summary="Export calls CSV",
+    description=(
+        "Download a CSV file of all call records for the business in the given period. "
+        "Includes call ID, date, caller, duration, outcome, emotion, language, escalated, and summary."
+    ),
+    response_class=StreamingResponse,
+)
+async def export_calls_csv(
+    business_id: uuid.UUID,
+    start: datetime = Query(default=None, description="Period start. Defaults to 30 days ago."),
+    end: datetime = Query(default=None, description="Period end. Defaults to now."),
+    db: AsyncSession = Depends(get_db),
+):
+    business = await db.get(Business, business_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    period_end = end or now
+    period_start = start or (now - timedelta(days=30))
+
+    calls_q = await db.execute(
+        select(Call).where(
+            and_(
+                Call.business_id == business_id,
+                Call.started_at >= period_start,
+                Call.started_at <= period_end,
+            )
+        ).order_by(Call.started_at)
+    )
+    calls = calls_q.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=[
+        "id", "started_at", "ended_at", "caller_number", "direction",
+        "status", "outcome", "duration_seconds", "language_detected",
+        "emotion_detected", "escalated", "escalation_reason", "summary",
+    ])
+    writer.writeheader()
+    for c in calls:
+        writer.writerow({
+            "id": str(c.id),
+            "started_at": c.started_at.isoformat() if c.started_at else "",
+            "ended_at": c.ended_at.isoformat() if c.ended_at else "",
+            "caller_number": c.caller_number,
+            "direction": c.direction.value if c.direction else "",
+            "status": c.status.value if c.status else "",
+            "outcome": c.outcome.value if c.outcome else "",
+            "duration_seconds": c.duration_seconds or "",
+            "language_detected": c.language_detected or "",
+            "emotion_detected": c.emotion_detected.value if c.emotion_detected else "",
+            "escalated": c.escalated,
+            "escalation_reason": c.escalation_reason or "",
+            "summary": (c.summary or "").replace("\n", " "),
+        })
+
+    output.seek(0)
+    filename = f"voxa_calls_{business_id}_{period_start.date()}_{period_end.date()}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get(
+    "/{business_id}/export/appointments",
+    summary="Export appointments CSV",
+    description="Download a CSV of all appointments in the given period.",
+    response_class=StreamingResponse,
+)
+async def export_appointments_csv(
+    business_id: uuid.UUID,
+    start: datetime = Query(default=None),
+    end: datetime = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    business = await db.get(Business, business_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    period_end = end or now
+    period_start = start or (now - timedelta(days=30))
+
+    appts_q = await db.execute(
+        select(Appointment).where(
+            and_(
+                Appointment.business_id == business_id,
+                Appointment.created_at >= period_start,
+                Appointment.created_at <= period_end,
+            )
+        ).order_by(Appointment.scheduled_at)
+    )
+    appts = appts_q.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=[
+        "id", "customer_id", "service_name", "scheduled_at",
+        "duration_minutes", "status", "reminder_sent", "notes",
+    ])
+    writer.writeheader()
+    for a in appts:
+        writer.writerow({
+            "id": str(a.id),
+            "customer_id": str(a.customer_id),
+            "service_name": a.service_name,
+            "scheduled_at": a.scheduled_at.isoformat() if a.scheduled_at else "",
+            "duration_minutes": a.duration_minutes,
+            "status": a.status.value if a.status else "",
+            "reminder_sent": a.reminder_sent,
+            "notes": (a.notes or "").replace("\n", " "),
+        })
+
+    output.seek(0)
+    filename = f"voxa_appointments_{business_id}_{period_start.date()}_{period_end.date()}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
