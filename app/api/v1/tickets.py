@@ -17,6 +17,8 @@ from app.models.ticket import Ticket, TicketStatus
 from app.models.business import Business
 from app.models.customer import Customer
 from app.schemas.ticket import CreateTicketRequest, UpdateTicketRequest, TicketResponse
+from app.services.crm.webhook_forwarder import WebhookForwarder
+from app.models.webhook_config import WebhookEvent
 
 router = APIRouter(prefix="/tickets", tags=["Tickets"])
 
@@ -52,6 +54,20 @@ async def create_ticket(
     db.add(ticket)
     await db.commit()
     await db.refresh(ticket)
+
+    # Forward ticket.created event to registered CRM webhooks
+    forwarder = WebhookForwarder(db)
+    await forwarder.dispatch(
+        business_id=business_id,
+        event=WebhookEvent.ticket_created,
+        payload={
+            "ticket_id": str(ticket.id),
+            "customer_id": str(ticket.customer_id),
+            "subject": ticket.subject,
+            "priority": ticket.priority.value,
+            "status": ticket.status.value,
+        },
+    )
     return ticket
 
 

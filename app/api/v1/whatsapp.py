@@ -15,6 +15,7 @@ from app.models.conversation import Conversation, Message, ConversationChannel, 
 from app.services.ai.agent import VoxaAgent
 from app.services.communication.whatsapp import WhatsAppService
 from app.config import get_settings
+from app.core.rate_limit import limiter
 
 settings = get_settings()
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
@@ -89,7 +90,7 @@ async def receive_whatsapp(request: Request, db: AsyncSession = Depends(get_db))
     # Save user message
     db.add(Message(conversation_id=conversation.id, role=MessageRole.user, content=text))
 
-    # Run AI agent
+    # Run AI agent (pass db so it loads conversation history)
     agent = VoxaAgent(business_id=business.id, conversation_id=conversation.id)
     agent_result = await agent.respond(
         user_message=text,
@@ -100,6 +101,7 @@ async def receive_whatsapp(request: Request, db: AsyncSession = Depends(get_db))
             "category": business.category.value,
             "greeting_message": business.greeting_message,
         },
+        db=db,
     )
 
     # Save assistant reply
@@ -114,7 +116,8 @@ async def receive_whatsapp(request: Request, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("30/minute")
+async def chat(request: Request, payload: ChatRequest, db: AsyncSession = Depends(get_db)):
     """Direct API chat endpoint for testing and integrations."""
     biz_result = await db.execute(select(Business).where(Business.id == payload.business_id))
     business = biz_result.scalar_one_or_none()
