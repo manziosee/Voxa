@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
+from app.core.rate_limit import limiter
 
 from app.api.deps import get_db
 from app.models.business import Business
@@ -33,6 +34,7 @@ router = APIRouter(prefix="/outbound", tags=["Outbound"])
         "The AI agent answers with the configured script_hint as its opening context."
     ),
 )
+@limiter.limit("10/minute")
 async def initiate_call(
     payload: OutboundCallRequest,
     request: Request,

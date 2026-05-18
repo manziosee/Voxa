@@ -37,6 +37,8 @@ class Business(Base):
     escalation_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # RAG knowledge base ID in vector store
     knowledge_base_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Stores IVR config, feature flags, and other extension points
+    extra: Mapped[dict] = mapped_column(JSONB, default={})
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -5,10 +5,11 @@ Handles reasoning, tool use, multilingual response, memory injection, and RAG co
 import uuid
 from dataclasses import dataclass, field
 
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langgraph.prebuilt import create_react_agent
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.services.ai.tools import VOXA_TOOLS
@@ -78,8 +79,9 @@ class VoxaAgent:
         language: str,
         customer_id: uuid.UUID | None = None,
         business_info: dict | None = None,
+        db: AsyncSession | None = None,
     ) -> AgentResult:
-        # Fetch context
+        # Fetch long-term customer memory and RAG knowledge context
         customer_history = ""
         if customer_id:
             customer_history = await self.memory_service.get_customer_summary(customer_id, self.business_id)
@@ -100,9 +102,15 @@ class VoxaAgent:
             knowledge_context=knowledge_context or "No specific knowledge loaded.",
         )
 
+        # Load conversation history from DB for in-session context (last 20 turns)
+        history_messages: list[BaseMessage] = []
+        if db is not None:
+            history_messages = await self._load_conversation_history(db)
+
         agent = create_react_agent(self._llm, VOXA_TOOLS)
-        messages = [
+        messages: list[BaseMessage] = [
             SystemMessage(content=system_content),
+            *history_messages,
             HumanMessage(content=user_message),
         ]
 
@@ -132,6 +140,28 @@ class VoxaAgent:
             suggested_actions=self._extract_suggested_actions(reply_text),
             tool_calls_made=tool_calls_made,
         )
+
+    async def _load_conversation_history(self, db: AsyncSession) -> list[BaseMessage]:
+        """Fetch the last 20 messages from this conversation and convert to LangChain messages."""
+        from sqlalchemy import select
+        from app.models.conversation import Message, MessageRole
+
+        result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == self.conversation_id)
+            .order_by(Message.created_at.desc())
+            .limit(20)
+        )
+        rows = result.scalars().all()
+        # Reverse so oldest-first for the LLM
+        rows = list(reversed(rows))
+        messages: list[BaseMessage] = []
+        for row in rows:
+            if row.role == MessageRole.user:
+                messages.append(HumanMessage(content=row.content))
+            elif row.role == MessageRole.assistant:
+                messages.append(AIMessage(content=row.content))
+        return messages
 
     def _extract_suggested_actions(self, reply: str) -> list[str]:
         actions = []

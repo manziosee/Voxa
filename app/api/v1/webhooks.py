@@ -21,6 +21,8 @@ from app.models.conversation import Conversation, ConversationChannel, Message, 
 from app.services.voice.pipeline import VoicePipeline
 from app.services.communication.twilio_service import TwilioService
 from app.services.crm.crm_service import CRMService
+from app.services.crm.webhook_forwarder import WebhookForwarder
+from app.models.webhook_config import WebhookEvent
 from app.services.voice.ivr import get_default_menu, build_ivr_twiml
 from app.config import get_settings
 
@@ -88,7 +90,7 @@ async def inbound_call(
     base = _base_url(request)
 
     # If business has IVR enabled (extra config flag), show menu first
-    use_ivr = (business.extra or {}).get("ivr_enabled", False) if hasattr(business, "extra") else False
+    use_ivr = (business.extra or {}).get("ivr_enabled", False)
     if use_ivr:
         menu = get_default_menu(business.name, business.preferred_language)
         twiml = build_ivr_twiml(menu, base_url=base, call_id=str(call.id))
@@ -152,6 +154,7 @@ async def speech_input(
             "category": business.category.value,
             "greeting_message": business.greeting_message,
         },
+        db=db,
     )
 
     emotion = detect_emotion(SpeechResult, language)
@@ -243,6 +246,24 @@ async def call_status_callback(
     # Post-call CRM update
     crm = CRMService(db)
     await crm.post_call_update(call)
+
+    # Forward call.completed event to registered CRM webhooks
+    forwarder = WebhookForwarder(db)
+    await forwarder.dispatch(
+        business_id=call.business_id,
+        event=WebhookEvent.call_completed,
+        payload={
+            "call_id": str(call.id),
+            "caller_number": call.caller_number,
+            "duration_seconds": call.duration_seconds,
+            "status": call.status.value,
+            "outcome": call.outcome.value if call.outcome else None,
+            "language": call.language_detected,
+            "emotion": call.emotion_detected.value,
+            "escalated": call.escalated,
+            "summary": call.summary,
+        },
+    )
 
     return {"status": "ok"}
 

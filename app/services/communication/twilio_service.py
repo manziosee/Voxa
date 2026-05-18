@@ -73,16 +73,24 @@ class TwilioService:
     async def initiate_outbound_call(
         self,
         to: str,
-        twiml_url: str,
+        twiml_url: str | None = None,
+        twiml: str | None = None,
         status_callback_url: str | None = None,
     ) -> str:
-        call = self.client.calls.create(
-            to=to,
-            from_=self.from_number,
-            url=twiml_url,
-            status_callback=status_callback_url,
-            status_callback_method="POST",
-        )
+        if not twiml_url and not twiml:
+            raise ValueError("Either twiml_url or twiml must be provided")
+        kwargs: dict = {
+            "to": to,
+            "from_": self.from_number,
+            "status_callback_method": "POST",
+        }
+        if twiml_url:
+            kwargs["url"] = twiml_url
+        else:
+            kwargs["twiml"] = twiml
+        if status_callback_url:
+            kwargs["status_callback"] = status_callback_url
+        call = self.client.calls.create(**kwargs)
         return call.sid
 
     def _twiml_language(self, lang: str) -> str:

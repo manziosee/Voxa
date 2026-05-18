@@ -7,6 +7,8 @@ from app.api.deps import get_db
 from app.models.appointment import Appointment, AppointmentStatus
 from app.schemas.appointment import AppointmentCreate, AppointmentUpdate, AppointmentOut
 from app.services.booking.booking_service import BookingService
+from app.services.crm.webhook_forwarder import WebhookForwarder
+from app.models.webhook_config import WebhookEvent
 
 router = APIRouter(prefix="/appointments", tags=["Appointments"])
 
@@ -36,6 +38,21 @@ async def create_appointment(payload: AppointmentCreate, db: AsyncSession = Depe
     db.add(appointment)
     await db.commit()
     await db.refresh(appointment)
+
+    # Forward appointment.created event to registered CRM webhooks
+    forwarder = WebhookForwarder(db)
+    await forwarder.dispatch(
+        business_id=appointment.business_id,
+        event=WebhookEvent.appointment_booked,
+        payload={
+            "appointment_id": str(appointment.id),
+            "customer_id": str(appointment.customer_id),
+            "service_name": appointment.service_name,
+            "scheduled_at": appointment.scheduled_at.isoformat(),
+            "duration_minutes": appointment.duration_minutes,
+            "status": appointment.status.value,
+        },
+    )
     return appointment
 
 
