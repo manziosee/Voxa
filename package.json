@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "@svgr/webpack": "^8.1.0",
+    "framer-motion": "^12.39.0",
+    "lucide-react": "^1.16.0",
+    "recharts": "^3.8.1",
+    "socket.io-client": "^4.8.3"
+  }
+}
